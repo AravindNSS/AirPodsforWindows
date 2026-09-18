@@ -23,7 +23,7 @@
 
 #include <QLocale>
 
-#include <magic_enum.hpp>
+#include <magic_enum/magic_enum.hpp>
 
 #include <Config.h>
 #include "Error.h"
