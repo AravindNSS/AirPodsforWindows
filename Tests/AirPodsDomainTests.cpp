@@ -769,6 +769,7 @@ void AirPodsDomainTests::ModelsListeningModeCapabilities()
         .transparency = true,
         .adaptive = false,
         .noiseCancellation = true,
+        .transportCompatible = true,
         .transportVersion = 1,
     };
 
@@ -790,7 +791,7 @@ void AirPodsDomainTests::SerializesListeningModeRequests()
     QCOMPARE(controller.State().availability, ControlAvailability::Connecting);
     QCOMPARE(transportObserver->connectedModel, Model::AirPods_Pro_3);
 
-    transportObserver->ReportReady({true, true, true, 1});
+    transportObserver->ReportReady({true, true, true, true, 1});
     QCOMPARE(controller.State().availability, ControlAvailability::Ready);
 
     controller.RequestMode(ListeningMode::Transparency);
@@ -819,7 +820,7 @@ void AirPodsDomainTests::CorrelatesListeningModeConfirmations()
     auto *transportObserver = transport.get();
     ListeningModeController controller{std::move(transport)};
     controller.SetDevice(Model::AirPods_Pro_3, true);
-    transportObserver->ReportReady({true, true, true, 1});
+    transportObserver->ReportReady({true, true, true, true, 1});
 
     controller.RequestMode(ListeningMode::Transparency);
     controller.RequestMode(ListeningMode::NoiseCancellation);
@@ -848,7 +849,7 @@ void AirPodsDomainTests::IgnoresStaleListeningModeSessions()
     controller.SetDevice(Model::AirPods_Pro_3, true);
     const auto staleSession = transportObserver->sessionId;
     controller.SetDevice(Model::AirPods_Pro_3, false);
-    transportObserver->ReportReadyFor(staleSession, {true, true, true, 1});
+    transportObserver->ReportReadyFor(staleSession, {true, true, true, true, 1});
     QCOMPARE(controller.State().availability, ControlAvailability::Unavailable);
 
     controller.SetDevice(Model::AirPods_Pro_3, true);
@@ -856,7 +857,7 @@ void AirPodsDomainTests::IgnoresStaleListeningModeSessions()
     QVERIFY(currentSession != staleSession);
     transportObserver->FailFor(staleSession, ListeningModeError::ConnectionFailed);
     QCOMPARE(controller.State().availability, ControlAvailability::Connecting);
-    transportObserver->ReportReady({true, true, true, 1});
+    transportObserver->ReportReady({true, true, true, true, 1});
     QCOMPARE(controller.State().availability, ControlAvailability::Ready);
 }
 
@@ -868,7 +869,7 @@ void AirPodsDomainTests::RestoresConfirmedModeAfterTimeout()
     auto *transportObserver = transport.get();
     ListeningModeController controller{std::move(transport), nullptr, 10};
     controller.SetDevice(Model::AirPods_Pro_3, true);
-    transportObserver->ReportReady({true, true, true, 1});
+    transportObserver->ReportReady({true, true, true, true, 1});
     transportObserver->Confirm(ListeningMode::Adaptive);
 
     controller.RequestMode(ListeningMode::Transparency);

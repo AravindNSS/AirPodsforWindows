@@ -194,6 +194,7 @@ void TaskbarStatus::UpdateState(const Core::AirPods::State &state)
 void TaskbarStatus::SetToolTip(const QString &text)
 {
     setToolTip(text);
+    setAccessibleName(text);
 }
 
 void TaskbarStatus::ApplyTheme()

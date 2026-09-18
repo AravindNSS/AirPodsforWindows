@@ -60,7 +60,7 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Install Qt 6.8.3
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
           version: '6.8.3'
           arch: win64_msvc2022_64
@@ -69,7 +69,12 @@ jobs:
 
       - name: Clone and bootstrap vcpkg
         run: |
-          git clone https://github.com/microsoft/vcpkg.git Build/vcpkg
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          if ($baseline -notmatch '^[0-9a-f]{40}$') {
+            throw 'vcpkg.json does not contain a valid pinned builtin-baseline.'
+          }
+          git clone --no-checkout https://github.com/microsoft/vcpkg.git Build/vcpkg
+          git -C Build/vcpkg checkout --detach $baseline
           & Build/vcpkg/bootstrap-vcpkg.bat -disableMetrics
 
       - name: Configure

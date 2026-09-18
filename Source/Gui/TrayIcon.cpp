@@ -71,6 +71,7 @@ TrayIcon::TrayIcon(
         _listeningModeGroup->addAction(action);
         _listeningModeMenu->addAction(action);
     }
+    RetranslateListeningModeActions();
     connect(_actionTransparency, &QAction::triggered, this, [this] {
         _listeningModeController.RequestMode(Core::AirPods::ListeningMode::Transparency);
     });

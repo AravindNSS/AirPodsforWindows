@@ -142,7 +142,13 @@ public:
     }
     void ReportReady()
     {
-        emit Ready(sessionId, {true, true, true, 1});
+        emit Ready(sessionId, {
+                                  .transparency = true,
+                                  .adaptive = true,
+                                  .noiseCancellation = true,
+                                  .transportCompatible = true,
+                                  .transportVersion = 1,
+                              });
     }
 
     uint64_t sessionId{0};

@@ -45,6 +45,7 @@ struct ListeningCapabilities {
     bool transparency{false};
     bool adaptive{false};
     bool noiseCancellation{false};
+    bool transportCompatible{false};
     uint32_t transportVersion{0};
 
     [[nodiscard]] bool Supports(ListeningMode mode) const

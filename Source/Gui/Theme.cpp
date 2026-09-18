@@ -316,12 +316,6 @@ Palette BuildPalette(const SystemTheme &system)
         p.glassShadow = QColor{0, 0, 0, 110};
     }
 
-    if (system.highContrast) {
-        p.glassSurface = p.mainSurface;
-        p.glassBorder = p.text;
-        p.glassHighlight = Qt::transparent;
-    }
-
     // Shared iOS battery colours
     p.batteryNormal = QColor{"#34C759"};
     p.batteryAlarm = QColor{"#FF3B30"};
@@ -332,6 +326,38 @@ Palette BuildPalette(const SystemTheme &system)
     p.accentPressed = Mix(p.accent, p.surface, 0.20);
     p.accentDisabled = p.dark ? QColor{"#545458"} : QColor{"#C7C7CC"};
     p.accentText = AccessibleForeground(p.accent);
+
+#if defined APD_OS_WIN
+    if (system.highContrast) {
+        const auto systemColor = [](int index) {
+            const COLORREF value = GetSysColor(index);
+            return QColor{GetRValue(value), GetGValue(value), GetBValue(value)};
+        };
+        const auto window = systemColor(COLOR_WINDOW);
+        const auto text = systemColor(COLOR_WINDOWTEXT);
+        const auto control = systemColor(COLOR_BTNFACE);
+        const auto border = systemColor(COLOR_WINDOWTEXT);
+        const auto highlight = systemColor(COLOR_HIGHLIGHT);
+
+        p.windowBackground = p.surface = p.surfaceSecondary = window;
+        p.mainSurface = p.popupSurface = p.glassSurface = window;
+        p.text = p.mainText = p.mainTextSecondary = text;
+        p.textSecondary = text;
+        p.textDisabled = systemColor(COLOR_GRAYTEXT);
+        p.controlFill = p.controlHover = p.controlPressed = control;
+        p.cardBorder = p.separator = p.controlBorder = border;
+        p.popupBorder = p.glassBorder = border;
+        p.glassHighlight = Qt::transparent;
+        p.mainCloseBg = p.mainCloseHover = p.mainClosePressed = control;
+        p.mainCloseGlyph = text;
+        p.accent = p.accentHover = p.accentPressed = highlight;
+        p.accentDisabled = systemColor(COLOR_GRAYTEXT);
+        p.accentText = systemColor(COLOR_HIGHLIGHTTEXT);
+        p.batteryBorder = border;
+        p.batteryNormal = p.batteryAlarm = highlight;
+        p.errorText = text;
+    }
+#endif
 
     return p;
 }

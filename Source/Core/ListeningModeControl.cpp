@@ -43,6 +43,7 @@ void SimulatedControlTransport::Connect(Model model, uint64_t sessionId)
             .transparency = true,
             .adaptive = true,
             .noiseCancellation = true,
+            .transportCompatible = true,
             .transportVersion = 1,
         });
         emit ModeConfirmed(sessionId, ListeningMode::Adaptive);
@@ -179,7 +180,9 @@ void ListeningModeController::OnReady(
     if (sessionId != _sessionId || _state.availability != ControlAvailability::Connecting) {
         return;
     }
-    if (_model != Model::AirPods_Pro_3 || !capabilities.Any()) {
+    if (_model != Model::AirPods_Pro_3 || !capabilities.Any() ||
+        !capabilities.transportCompatible)
+    {
         OnFailed(sessionId, ListeningModeError::ProtocolError);
         return;
     }
