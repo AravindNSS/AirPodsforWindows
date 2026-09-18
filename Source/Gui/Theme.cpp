@@ -50,7 +50,12 @@ namespace {
 constexpr DWORD kDwmwaUseImmersiveDarkModeBefore20H1 = 19;
 constexpr DWORD kDwmwaUseImmersiveDarkMode = 20;
 constexpr DWORD kDwmwaWindowCornerPreference = 33;
+constexpr DWORD kDwmwaSystemBackdropType = 38;
 constexpr DWORD kDwmwcpRoundSmall = 3;
+constexpr DWORD kDwmwcpRound = 2;
+constexpr DWORD kDwmSystemBackdropAuto = 0;
+constexpr DWORD kDwmSystemBackdropMainWindow = 2;
+constexpr DWORD kDwmSystemBackdropTransientWindow = 3;
 #endif
 
 constexpr auto kDefaultAccent = "#0067C0";
@@ -133,6 +138,9 @@ struct SystemTheme {
     bool systemDark{false};
     QColor accent;
     std::optional<QColor> accentForLight, accentForDark;
+    bool transparencyEnabled{true};
+    bool highContrast{false};
+    bool animationsEnabled{true};
 
     bool operator==(const SystemTheme &) const = default;
 };
@@ -175,6 +183,19 @@ SystemTheme ReadSystemTheme()
 
     result.appsDark = personalize.value("AppsUseLightTheme", 1).toInt() == 0;
     result.systemDark = personalize.value("SystemUsesLightTheme", 1).toInt() == 0;
+    result.transparencyEnabled = personalize.value("EnableTransparency", 1).toInt() != 0;
+
+    HIGHCONTRASTW highContrast{};
+    highContrast.cbSize = sizeof(HIGHCONTRASTW);
+    if (SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(highContrast), &highContrast, 0)) {
+        result.highContrast = (highContrast.dwFlags & HCF_HIGHCONTRASTON) != 0;
+    }
+    BOOL animationsEnabled = TRUE;
+    if (SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION, 0, &animationsEnabled, 0))
+    {
+        result.animationsEnabled = animationsEnabled == TRUE;
+    }
 
     try {
         using namespace winrt::Windows::UI::ViewManagement;
@@ -258,6 +279,10 @@ Palette BuildPalette(const SystemTheme &system)
         p.batteryBorder = QColor{"#8E8E93"};
 
         p.accent = system.accentForLight.value_or(system.accent.darker(110));
+        p.glassSurface = QColor{248, 248, 250, system.transparencyEnabled ? 218 : 255};
+        p.glassBorder = QColor{255, 255, 255, 190};
+        p.glassHighlight = QColor{255, 255, 255, 120};
+        p.glassShadow = QColor{0, 0, 0, 48};
     }
     else {
         p.windowBackground = QColor{"#1C1C1E"};
@@ -285,6 +310,16 @@ Palette BuildPalette(const SystemTheme &system)
         p.batteryBorder = QColor{"#636366"};
 
         p.accent = system.accentForDark.value_or(system.accent.lighter(135));
+        p.glassSurface = QColor{30, 30, 34, system.transparencyEnabled ? 218 : 255};
+        p.glassBorder = QColor{255, 255, 255, 50};
+        p.glassHighlight = QColor{255, 255, 255, 28};
+        p.glassShadow = QColor{0, 0, 0, 110};
+    }
+
+    if (system.highContrast) {
+        p.glassSurface = p.mainSurface;
+        p.glassBorder = p.text;
+        p.glassHighlight = Qt::transparent;
     }
 
     // Shared iOS battery colours
@@ -303,6 +338,13 @@ Palette BuildPalette(const SystemTheme &system)
 
 QString ColorName(const QColor &color)
 {
+    if (color.alpha() < 255) {
+        return QString{"rgba(%1, %2, %3, %4)"}
+            .arg(color.red())
+            .arg(color.green())
+            .arg(color.blue())
+            .arg(color.alpha());
+    }
     return color.name(QColor::HexRgb);
 }
 
@@ -384,11 +426,9 @@ public:
 
         switch (msg->message) {
         case WM_SETTINGCHANGE:
-            if (msg->lParam != 0 &&
-                lstrcmpiW(reinterpret_cast<LPCWSTR>(msg->lParam), L"ImmersiveColorSet") == 0)
-            {
-                themeMayHaveChanged = true;
-            }
+            // This also carries high-contrast, transparency and client-animation changes.
+            // Refreshing all theme inputs is cheap and the debounce coalesces broadcast bursts.
+            themeMayHaveChanged = true;
             break;
         case WM_DWMCOLORIZATIONCOLORCHANGED:
         case WM_THEMECHANGED:
@@ -478,6 +518,21 @@ bool Manager::IsSystemDark() const
     return _impl->system.systemDark;
 }
 
+bool Manager::IsTransparencyEnabled() const
+{
+    return _impl->system.transparencyEnabled && !_impl->system.highContrast;
+}
+
+bool Manager::IsHighContrast() const
+{
+    return _impl->system.highContrast;
+}
+
+bool Manager::AnimationsEnabled() const
+{
+    return _impl->system.animationsEnabled;
+}
+
 QColor Manager::Accent() const
 {
     return _impl->palette.accent;
@@ -504,7 +559,7 @@ QPalette Manager::QtPalette() const
 
     QPalette palette;
 
-    palette.setColor(QPalette::Window, p.windowBackground);
+    palette.setColor(QPalette::Window, p.glassSurface);
     palette.setColor(QPalette::WindowText, p.text);
     palette.setColor(QPalette::Base, p.surface);
     palette.setColor(QPalette::AlternateBase, p.surfaceSecondary);
@@ -573,6 +628,29 @@ QPushButton:default:pressed, QPushButton[cssClass="accent"]:pressed {
 QPushButton:default:disabled, QPushButton[cssClass="accent"]:disabled {
     background: @accentDisabled; border-color: @accentDisabled; color: @textDisabled;
 }
+
+/* ---------- Listening mode segmented control ---------- */
+QWidget[cssClass="listeningModeSelector"] {
+    background: @surfaceSecondary;
+    border: 1px solid @cardBorder;
+    border-radius: 12px;
+}
+QToolButton[cssClass="listeningSegment"] {
+    min-height: 34px;
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: @textSecondary;
+}
+QToolButton[cssClass="listeningSegment"]:hover { background: @controlHover; color: @text; }
+QToolButton[cssClass="listeningSegment"]:focus { border: 2px solid @accent; }
+QToolButton[cssClass="listeningSegment"]:checked {
+    background: @accent;
+    border-color: @accent;
+    color: @accentText;
+}
+QToolButton[cssClass="listeningSegment"][pending="true"] { border: 2px solid @accentText; }
 
 /* ---------- Check box ---------- */
 QCheckBox { spacing: 8px; }
@@ -691,7 +769,13 @@ QListWidget::item:hover { background: @controlHover; }
 QListWidget::item:selected { background: @controlHover; color: @text; }
 
 /* Settings navigation pane */
-QWidget#navPane { background: @surfaceSecondary; }
+QDialog#SettingsWindow, QDialog#SelectWindow, QDialog#UpdateWindow {
+    background: @glassSurface;
+}
+QWidget#navPane {
+    background: @glassSurface;
+    border-right: 1px solid @glassBorder;
+}
 QListWidget#navList {
     background: transparent;
     border: none;
@@ -806,7 +890,7 @@ QMenu::indicator:non-exclusive:checked { image: url(:/Resource/Image/Theme/Check
 QDialogButtonBox { dialogbuttonbox-buttons-have-icons: 0; }
 
 /* ---------- Grouped software update dialog ---------- */
-QDialog#UpdateWindow { background: @windowBackground; }
+QDialog#UpdateWindow { background: @glassSurface; }
 QDialog#UpdateWindow QFrame#card {
     background: @surface; border: 1px solid @cardBorder; border-radius: 10px;
 }
@@ -857,6 +941,9 @@ QDialog#UpdateWindow QPushButton:disabled {
         {"@notesBackground", ColorName(p.dark ? p.surfaceSecondary : p.windowBackground)},
         {"@notesBorder", ColorName(p.dark ? p.cardBorder : p.surfaceSecondary)},
         {"@flatHover", ColorName(p.dark ? p.controlFill : p.surfaceSecondary)},
+        {"@glassHighlight", ColorName(p.glassHighlight)},
+        {"@glassSurface", ColorName(p.glassSurface)},
+        {"@glassBorder", ColorName(p.glassBorder)},
         {"@errorText", ColorName(p.errorText)},
         {"@windowBackground", ColorName(p.windowBackground)},
         {"@surfaceSecondary", ColorName(p.surfaceSecondary)},
@@ -958,6 +1045,19 @@ void Manager::ApplyToWindow(QWidget *topLevel)
 
     const auto type = topLevel->windowFlags() & Qt::WindowType_Mask;
     const bool isPopup = type == Qt::Popup || type == Qt::ToolTip;
+
+    if (Core::OS::Windows::System::Is11OrGreater()) {
+        DWORD backdrop = kDwmSystemBackdropAuto;
+        if (IsTransparencyEnabled()) {
+            backdrop = topLevel->property(kBackdropRoleProperty) == "transient"
+                           ? kDwmSystemBackdropTransientWindow
+                           : kDwmSystemBackdropMainWindow;
+        }
+        DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop));
+
+        DWORD corner = isPopup ? kDwmwcpRoundSmall : kDwmwcpRound;
+        DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
+    }
 
     if (!isPopup) {
         BOOL dark = _impl->palette.dark ? TRUE : FALSE;

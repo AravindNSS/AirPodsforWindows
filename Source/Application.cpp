@@ -36,6 +36,7 @@
 #include "Core/Bluetooth.h"
 #include "Core/GlobalMedia.h"
 #include "Core/LowAudioLatency.h"
+#include "Core/ListeningModeControl.h"
 #include "Core/QuickConnect.h"
 #if defined APD_OS_WIN
     #include "Core/QuickConnect_win.h"
@@ -203,11 +204,13 @@ bool ApdApplication::Prepare(int argc, char *argv[])
     _quickConnectBackend = std::make_shared<Core::QuickConnect::NullBackend>();
 #endif
     _quickConnect = std::make_unique<Core::QuickConnect::Controller>(_quickConnectBackend);
+    _listeningModeController = std::make_unique<Core::AirPods::ListeningModeController>(
+        Core::AirPods::CreateControlTransport());
 
     _trayIcon = std::make_unique<Gui::TrayIcon>(
-        [this] { return GetCurrentLoadedLocaleIndex(); }, *_quickConnect);
+        [this] { return GetCurrentLoadedLocaleIndex(); }, *_quickConnect, *_listeningModeController);
     _taskbarStatus = std::make_unique<Gui::TaskbarStatus>();
-    _mainWindow = std::make_unique<Gui::MainWindow>();
+    _mainWindow = std::make_unique<Gui::MainWindow>(*_listeningModeController);
     _mainWindow->StartUpdateChecks();
     _lowAudioLatencyController = std::make_unique<Core::LowAudioLatency::Controller>();
     _autoStartService = Core::AutoStart::CreateAutoStartService();

@@ -21,9 +21,11 @@
 
 #include <QWindow>
 #include <QApplication>
+#include <QPixmap>
 
 #include "../Core/OS/Windows.h"
 #include "Theme.h"
+#include "MainWindowPresentation.h"
 
 //
 // Windows 10
@@ -156,7 +158,7 @@ TaskbarStatus::TaskbarStatus(QWidget *parent) : QDialog{parent}
     // Lives inside the shell's taskbar window; DWM attributes are not for it.
     setProperty(Theme::Manager::kSkipDwmProperty, true);
 
-    layout()->setContentsMargins(5, 5, 5, 5);
+    layout()->setContentsMargins(3, 2, 3, 2);
 
     _icon.left->SetText("L");
     _icon.right->SetText("R");
@@ -173,6 +175,7 @@ TaskbarStatus::TaskbarStatus(QWidget *parent) : QDialog{parent}
     _ui.horizontalLayoutLeft->addWidget(_battery.left);
     _ui.horizontalLayoutRight->insertWidget(0, _icon.right);
     _ui.horizontalLayoutRight->addWidget(_battery.right);
+    _ui.modelIcon->hide();
 }
 
 TaskbarStatus::~TaskbarStatus()
@@ -253,9 +256,14 @@ bool TaskbarStatus::Enable()
         return false;
     }
     const auto &info = optInfo.value();
+    if (_isWin11OrGreater && !info.isHorizontal) {
+        LOG(Warn, "The standard Windows 11 taskbar does not support vertical taskbar status.");
+        return false;
+    }
 
     winId(); // makes `windowHandle()` have a value
     windowHandle()->setParent(QWindow::fromWinId(reinterpret_cast<WId>(info.hReBarWindow32)));
+    _taskbarParent = info.hReBarWindow32;
     setAttribute(Qt::WA_TranslucentBackground);
     UpdatePos(info, true);
     _isFirstTimeout = true;
@@ -268,27 +276,33 @@ bool TaskbarStatus::Disable()
 {
     const auto optInfo = GetTaskBarInfo();
     if (!optInfo.has_value()) {
-        LOG(Error, "Try to disable, but failed to `GetTaskBarInfo()`");
-        return false;
+        // Explorer may be between processes. There is no old task-button window left to restore,
+        // but the child must still disappear and release its stale parent relationship.
+        hide();
+        _updateTimer.stop();
+        _taskbarParent = nullptr;
+        return true;
     }
     const auto &info = optInfo.value();
 
     hide();
     _updateTimer.stop();
     UpdatePos(info, false);
+    _taskbarParent = nullptr;
     return true;
 }
 
 void TaskbarStatus::UpdatePos(const TaskBarInfo &info, bool enable)
 {
     LOG(Trace, "The taskbar is '{}'", info.isHorizontal ? "horizontal" : "vertical");
+    ApplyOrientation(info.isHorizontal);
 
     const auto &rectMSTaskSwWClassForParent = info.rectMSTaskSwWClassForParent;
     const auto &rectReBarWindow32 = info.rectReBarWindow32;
     const auto dpi = static_cast<int>(GetDpiForWindow(info.hReBarWindow32));
     const auto layout = TaskbarGeometry::CalculateLayout(
         rectReBarWindow32.size(), rectMSTaskSwWClassForParent, dpi, info.isHorizontal,
-        QSize{kFixedWidth, kFixedHeight});
+        StatusLogicalSize(info.isHorizontal));
 
     if (enable) {
         if (!_isWin11OrGreater) {
@@ -349,16 +363,25 @@ void TaskbarStatus::Repaint()
             break;
         }
         const auto &state = _airPodsState.value();
+        const bool detailed = _behavior == TaskbarStatusBehavior::Text;
+        const bool hasModelIcon = UpdateModelIcon(state.model);
+        _ui.modelIcon->setVisible(detailed && hasModelIcon);
+        bool hasAnyBattery = false;
 
         if (state.pods.left.battery.Available()) {
             const auto batteryValue = state.pods.left.battery.Value();
 
-            _ui.labelLeft->setText(QString{"%1%"}.arg(batteryValue));
+            _ui.labelLeft->setText(QString{"L %1%2"}
+                                       .arg(batteryValue)
+                                       .arg(state.pods.left.isCharging
+                                                ? QString{" "} + QChar{ushort{0x26A1}}
+                                                : QString{}));
             _battery.left->setValue(batteryValue);
             _battery.left->setCharging(state.pods.left.isCharging);
+            hasAnyBattery = true;
 
-            _icon.left->show();
-            if (_behavior == TaskbarStatusBehavior::Text) {
+            _icon.left->setVisible(!detailed);
+            if (detailed) {
                 _ui.labelLeft->show();
                 _battery.left->hide();
             }
@@ -376,12 +399,17 @@ void TaskbarStatus::Repaint()
         if (state.pods.right.battery.Available()) {
             const auto batteryValue = state.pods.right.battery.Value();
 
-            _ui.labelRight->setText(QString{"%1%"}.arg(batteryValue));
+            _ui.labelRight->setText(QString{"R %1%2"}
+                                        .arg(batteryValue)
+                                        .arg(state.pods.right.isCharging
+                                                 ? QString{" "} + QChar{ushort{0x26A1}}
+                                                 : QString{}));
             _battery.right->setValue(batteryValue);
             _battery.right->setCharging(state.pods.right.isCharging);
+            hasAnyBattery = true;
 
-            _icon.right->show();
-            if (_behavior == TaskbarStatusBehavior::Text) {
+            _icon.right->setVisible(!detailed);
+            if (detailed) {
                 _ui.labelRight->show();
                 _battery.right->hide();
             }
@@ -396,7 +424,7 @@ void TaskbarStatus::Repaint()
             _battery.right->hide();
         }
 
-        _isStateReady = true;
+        _isStateReady = hasAnyBattery;
         break;
     }
     default:
@@ -406,18 +434,87 @@ void TaskbarStatus::Repaint()
     UpdateVisible();
 }
 
+QSize TaskbarStatus::StatusLogicalSize(bool horizontal) const
+{
+    const auto longSide = _behavior == TaskbarStatusBehavior::Text ? kDetailedLongSide
+                                                                   : kCompactLongSide;
+    return horizontal ? QSize{longSide, kTaskbarThickness}
+                      : QSize{kTaskbarThickness, longSide};
+}
+
+bool TaskbarStatus::UpdateModelIcon(Core::AirPods::Model model)
+{
+    const auto path = GetModelImageResource(model);
+    const QPixmap source{path};
+    if (source.isNull()) {
+        _ui.modelIcon->clear();
+        _ui.modelIcon->setAccessibleName({});
+        return false;
+    }
+
+    _ui.modelIcon->setPixmap(
+        source.scaled(QSize{28, 28}, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    _ui.modelIcon->setAccessibleName(Helper::ToString(model));
+    return true;
+}
+
+void TaskbarStatus::ApplyOrientation(bool horizontal)
+{
+    if (_lastHorizontal == horizontal) {
+        return;
+    }
+
+    auto *grid = _ui.gridLayout;
+    grid->removeWidget(_ui.modelIcon);
+    grid->removeItem(_ui.horizontalLayoutLeft);
+    grid->removeItem(_ui.horizontalLayoutRight);
+
+    if (horizontal) {
+        grid->addWidget(_ui.modelIcon, 0, 0, 2, 1, Qt::AlignCenter);
+        grid->addLayout(_ui.horizontalLayoutLeft, 0, 1);
+        grid->addLayout(_ui.horizontalLayoutRight, 1, 1);
+    }
+    else {
+        grid->addWidget(_ui.modelIcon, 0, 0, Qt::AlignCenter);
+        grid->addLayout(_ui.horizontalLayoutLeft, 1, 0);
+        grid->addLayout(_ui.horizontalLayoutRight, 2, 0);
+    }
+    _lastHorizontal = horizontal;
+}
+
 void TaskbarStatus::OnUpdateTimer()
 {
     const auto optInfo = GetTaskBarInfo();
     if (!optInfo.has_value()) {
         LOG(Trace, "Try to update, but failed to `GetTaskBarInfo()`");
+        if (++_shellMissCount >= 3) {
+            hide();
+        }
         return;
     }
     const auto &info = optInfo.value();
+    _shellMissCount = 0;
+    if (_isWin11OrGreater && !info.isHorizontal) {
+        hide();
+        return;
+    }
 
-    bool taskbarResized = _cachedLength != (info.isHorizontal ? info.rectReBarWindow32.width()
-                                                              : info.rectReBarWindow32.height());
-    bool needToUpdate = taskbarResized || _isFirstTimeout;
+    const bool parentChanged = _taskbarParent != info.hReBarWindow32;
+    if (parentChanged) {
+        windowHandle()->setParent(QWindow::fromWinId(reinterpret_cast<WId>(info.hReBarWindow32)));
+        _taskbarParent = info.hReBarWindow32;
+    }
+    if (isHidden()) {
+        show();
+    }
+
+    const bool taskbarResized =
+        _cachedLength !=
+        (info.isHorizontal ? info.rectReBarWindow32.width() : info.rectReBarWindow32.height());
+    const bool orientationChanged = !_lastHorizontal.has_value() ||
+                                    *_lastHorizontal != info.isHorizontal;
+    const bool needToUpdate =
+        taskbarResized || orientationChanged || _isFirstTimeout || parentChanged;
 
     // We update the position again at the second time after the window is displayed, because the
     // first update may cause some shifting, I guess it's `setParent` causing some weird Qt bugs.
@@ -437,8 +534,14 @@ void TaskbarStatus::OnUpdateTimer()
 
 void TaskbarStatus::OnSettingsChanged(TaskbarStatusBehavior value)
 {
+    if (_behavior != value) {
+        _cachedLength = 0;
+    }
     _behavior = value;
     Repaint();
+    if (_isActuallyEnabled) {
+        OnUpdateTimer();
+    }
 }
 
 void TaskbarStatus::paintEvent(QPaintEvent *event)

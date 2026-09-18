@@ -13,6 +13,10 @@ AirPodsDesktop uses C++20 and builds for **Windows x64** with:
 Qt 6.8.3 is the supported development, CI, and release baseline. It is installed from the public
 Qt package feed, so repository builds do not require Qt account credentials.
 
+The normal application build does not require the Windows Driver Kit. Listening-mode transport and
+its hardware, security, and signing gates are documented separately in
+[ListeningControls.md](ListeningControls.md).
+
 ## Configure and build
 
 Clone the repository and enter its root directory in PowerShell:

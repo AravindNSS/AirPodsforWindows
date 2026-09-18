@@ -18,6 +18,7 @@
 
 #include "Base.h"
 #include "../Core/AirPods.h"
+#include "../Core/ListeningMode.h"
 
 namespace Gui {
 
@@ -71,6 +72,9 @@ private:
 };
 
 AnimationPresentation GetAnimationPresentation(Core::AirPods::Model model);
+QString GetModelImageResource(Core::AirPods::Model model);
+QString ListeningModeLabel(Core::AirPods::ListeningMode mode);
+QString ListeningModeErrorText(Core::AirPods::ListeningModeError error);
 QPoint PopupPosition(const QRect &availableGeometry, QSize windowSize, QSize margin);
 
 } // namespace Gui

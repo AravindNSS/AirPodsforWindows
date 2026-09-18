@@ -21,6 +21,7 @@
 #include <QSignalSpy>
 #include <QStyleOptionComboBox>
 #include <QThread>
+#include <QToolButton>
 #include <QUrl>
 #include <QTimer>
 #include <QPainter>
@@ -70,7 +71,9 @@ void VerifySmoothPopupCorners(QWidget *popup, const QString &fileName)
                     right ? image.width() - 1 - x : x, bottom ? image.height() - 1 - y : y);
             };
             QCOMPARE(qAlpha(pixelAt(0, 0)), 0);
-            QCOMPARE(qAlpha(pixelAt(cornerSize, cornerSize)), 255);
+            // Glass surfaces deliberately retain alpha; the content area must still be
+            // substantially opaque enough for text contrast.
+            QVERIFY(qAlpha(pixelAt(cornerSize, cornerSize)) >= 200);
             int blendedPixels = 0;
             for (int y = 0; y < cornerSize; ++y) {
                 for (int x = 0; x < cornerSize; ++x) {
@@ -124,6 +127,26 @@ struct SimulatedDownload {
         return [this](const auto &info, const auto &progress) { return Run(info, progress); };
     }
 };
+
+class ReadyControlTransport final : public Core::AirPods::IAirPodsControlTransport
+{
+public:
+    void Connect(Core::AirPods::Model, uint64_t newSessionId) override
+    {
+        sessionId = newSessionId;
+    }
+    void Disconnect(uint64_t) override {}
+    void SetListeningMode(Core::AirPods::ListeningMode mode, uint64_t commandSessionId) override
+    {
+        emit ModeConfirmed(commandSessionId, mode);
+    }
+    void ReportReady()
+    {
+        emit Ready(sessionId, {true, true, true, 1});
+    }
+
+    uint64_t sessionId{0};
+};
 } // namespace
 
 class UiRenderingTests : public QObject
@@ -133,9 +156,14 @@ class UiRenderingTests : public QObject
 private Q_SLOTS:
     void MainWindowElidesLongDeviceNames()
     {
-        Gui::MainWindow window;
+        Core::AirPods::ListeningModeController listeningModeController{
+            std::make_unique<Core::AirPods::UnavailableControlTransport>()};
+        Gui::MainWindow window{listeningModeController};
         auto *label = window.findChild<QLabel *>("deviceLabel");
+        auto *listeningModes = window.findChild<QWidget *>("listeningModeContainer");
         QVERIFY(label != nullptr);
+        QVERIFY(listeningModes != nullptr);
+        QVERIFY(listeningModes->isHidden());
         QCOMPARE(label->textFormat(), Qt::PlainText);
         QVERIFY(!label->wordWrap());
 
@@ -164,6 +192,31 @@ private Q_SLOTS:
         const auto scale = qEnvironmentVariable("QT_SCALE_FACTOR", "system");
         VerifySmoothPopupCorners(
             &window, QString{"main-window-long-device-name-scale%1.png"}.arg(scale));
+    }
+
+    void MainWindowShowsReadyListeningModes()
+    {
+        auto transport = std::make_unique<ReadyControlTransport>();
+        auto *transportObserver = transport.get();
+        Core::AirPods::ListeningModeController listeningModeController{std::move(transport)};
+        Gui::MainWindow window{listeningModeController};
+
+        Core::AirPods::State state;
+        state.model = Core::AirPods::Model::AirPods_Pro_3;
+        state.displayName = QStringLiteral("AirPods Pro 3");
+        window.UpdateState(state);
+        transportObserver->ReportReady();
+
+        auto *container = window.findChild<QWidget *>("listeningModeContainer");
+        QVERIFY(container != nullptr);
+        QVERIFY(!container->isHidden());
+
+        const auto buttons = container->findChildren<QToolButton *>();
+        QCOMPARE(buttons.size(), 3);
+        for (auto *button : buttons) {
+            QVERIFY(!button->text().isEmpty());
+            QVERIFY(!button->accessibleName().isEmpty());
+        }
     }
 
     void UpdateTextHasAntialiasedEdges_data()
@@ -767,7 +820,9 @@ private Q_SLOTS:
     {
         auto backend = std::make_shared<Core::QuickConnect::NullBackend>();
         Core::QuickConnect::Controller quickConnect{backend};
-        Gui::TrayIcon tray{[] { return 0; }, quickConnect};
+        Core::AirPods::ListeningModeController listeningModeController{
+            std::make_unique<Core::AirPods::UnavailableControlTransport>()};
+        Gui::TrayIcon tray{[] { return 0; }, quickConnect, listeningModeController};
         auto *menu = tray.findChild<QMenu *>();
         QVERIFY(menu != nullptr);
         const auto actions = menu->actions();

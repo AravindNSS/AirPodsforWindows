@@ -18,18 +18,22 @@
 
 #include "TrayIcon.h"
 #include "Theme.h"
+#include "MainWindowPresentation.h"
 
 #include <QFont>
 #include <QApplication>
 #include <QPainter>
+#include <QSignalBlocker>
 #include <QSvgRenderer>
 
 #include <Config.h>
 namespace Gui {
 
 TrayIcon::TrayIcon(
-    std::function<int()> getCurrentLocaleIndex, Core::QuickConnect::Controller &quickConnect)
-    : _quickConnect{quickConnect}, _settingsWindow{std::move(getCurrentLocaleIndex), quickConnect}
+    std::function<int()> getCurrentLocaleIndex, Core::QuickConnect::Controller &quickConnect,
+    Core::AirPods::ListeningModeController &listeningModeController)
+    : _quickConnect{quickConnect}, _listeningModeController{listeningModeController},
+      _settingsWindow{std::move(getCurrentLocaleIndex), quickConnect}
 {
     Theme::ConfigurePopupSurface(_menu);
     _singleClickTimer.setSingleShot(true);
@@ -49,6 +53,9 @@ TrayIcon::TrayIcon(
     connect(
         &_quickConnect, &Core::QuickConnect::Controller::OutcomeChanged, this,
         &TrayIcon::OnQuickConnectOutcome);
+    connect(
+        &_listeningModeController, &Core::AirPods::ListeningModeController::StateChanged, this,
+        &TrayIcon::OnListeningModeStateChanged);
 
     connect(
         this, &TrayIcon::OnTrayIconBatteryChangedSafely, this, &TrayIcon::OnTrayIconBatteryChanged);
@@ -58,9 +65,27 @@ TrayIcon::TrayIcon(
     _actionNewVersion->setVisible(false);
     _actionLowAudioLatency->setCheckable(true);
 
+    _listeningModeGroup->setExclusive(true);
+    for (auto *action : {_actionTransparency, _actionAdaptive, _actionNoiseCancellation}) {
+        action->setCheckable(true);
+        _listeningModeGroup->addAction(action);
+        _listeningModeMenu->addAction(action);
+    }
+    connect(_actionTransparency, &QAction::triggered, this, [this] {
+        _listeningModeController.RequestMode(Core::AirPods::ListeningMode::Transparency);
+    });
+    connect(_actionAdaptive, &QAction::triggered, this, [this] {
+        _listeningModeController.RequestMode(Core::AirPods::ListeningMode::Adaptive);
+    });
+    connect(_actionNoiseCancellation, &QAction::triggered, this, [this] {
+        _listeningModeController.RequestMode(Core::AirPods::ListeningMode::NoiseCancellation);
+    });
+    _listeningModeMenu->menuAction()->setVisible(false);
+
     _menu->addAction(_actionNewVersion);
     _menu->addSeparator();
     _menu->addAction(_actionLowAudioLatency);
+    _menu->addMenu(_listeningModeMenu);
     _menu->addAction(_actionSettings);
     _menu->addSeparator();
     _menu->addAction(_actionAbout);
@@ -457,6 +482,49 @@ void TrayIcon::OnLowAudioLatencyChanged(bool enabled)
 {
     _actionLowAudioLatency->setChecked(enabled);
     _settingsWindow.SetLowAudioLatencyChecked(enabled);
+}
+
+void TrayIcon::OnListeningModeStateChanged(const Core::AirPods::ListeningModeState &state)
+{
+    using Core::AirPods::ControlAvailability;
+    using Core::AirPods::ListeningMode;
+
+    const bool ready = state.availability == ControlAvailability::Ready &&
+                       state.capabilities.Any();
+    _listeningModeMenu->menuAction()->setVisible(ready);
+
+    if (state.error != Core::AirPods::ListeningModeError::None &&
+        state.error != _lastListeningModeError)
+    {
+        const auto message = ListeningModeErrorText(state.error);
+        if (!message.isEmpty()) {
+            ShowMessage(tr("Listening mode"), message, QSystemTrayIcon::Warning);
+        }
+    }
+    _lastListeningModeError = state.error;
+
+    if (!ready) {
+        return;
+    }
+
+    _actionTransparency->setVisible(state.capabilities.transparency);
+    _actionAdaptive->setVisible(state.capabilities.adaptive);
+    _actionNoiseCancellation->setVisible(state.capabilities.noiseCancellation);
+
+    const auto selected = state.pendingMode.has_value() ? state.pendingMode : state.confirmedMode;
+    const QSignalBlocker blocker{_listeningModeGroup};
+    _actionTransparency->setChecked(selected == ListeningMode::Transparency);
+    _actionAdaptive->setChecked(selected == ListeningMode::Adaptive);
+    _actionNoiseCancellation->setChecked(selected == ListeningMode::NoiseCancellation);
+}
+
+void TrayIcon::RetranslateListeningModeActions()
+{
+    _listeningModeMenu->setTitle(tr("Listening mode"));
+    _actionTransparency->setText(ListeningModeLabel(Core::AirPods::ListeningMode::Transparency));
+    _actionAdaptive->setText(ListeningModeLabel(Core::AirPods::ListeningMode::Adaptive));
+    _actionNoiseCancellation->setText(
+        ListeningModeLabel(Core::AirPods::ListeningMode::NoiseCancellation));
 }
 
 } // namespace Gui

@@ -324,6 +324,7 @@ set(
     "Source/Core/AirPodsAdvertisement.cpp"
     "Source/Core/AirPodsStateManager.cpp"
     "Source/Core/AppleCP.cpp"
+    "Source/Core/ListeningMode.h"
 )
 
 set(
@@ -336,6 +337,8 @@ set(
     "Source/Core/Settings.cpp"
     "Source/Core/SettingsRepository.cpp"
     "Source/Core/LowAudioLatency.cpp"
+    "Source/Core/ListeningModeControl.cpp"
+    "Source/Core/AapProtocol.cpp"
 )
 
 set(

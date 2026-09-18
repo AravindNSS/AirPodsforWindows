@@ -19,12 +19,21 @@
 #include "MainWindow.h"
 
 #include <QScreen>
+#include <QAccessible>
 #include <QCursor>
 #include <QFontMetrics>
+#include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QPainter>
 #include <QMessageBox>
 #include <QCloseEvent>
 #include <QEnterEvent>
+#include <QToolButton>
+#include <QStyle>
+
+#include <algorithm>
+#include <utility>
+#include <vector>
 
 #include <Config.h>
 #include "../Helper.h"
@@ -136,9 +145,140 @@ protected:
     }
 };
 
+class ListeningModeSelector final : public QWidget
+{
+public:
+    explicit ListeningModeSelector(
+        Core::AirPods::ListeningModeController &controller, QWidget *parent = nullptr)
+        : QWidget{parent}, _controller{controller}
+    {
+        auto *layout = new QHBoxLayout{this};
+        layout->setContentsMargins(2, 2, 2, 2);
+        layout->setSpacing(2);
+        setProperty("cssClass", "listeningModeSelector");
+        setAccessibleName(tr("Listening mode"));
+
+        AddButton(
+            ListeningModeLabel(Core::AirPods::ListeningMode::Transparency),
+            Core::AirPods::ListeningMode::Transparency, layout);
+        AddButton(
+            ListeningModeLabel(Core::AirPods::ListeningMode::Adaptive),
+            Core::AirPods::ListeningMode::Adaptive, layout);
+        AddButton(
+            ListeningModeLabel(Core::AirPods::ListeningMode::NoiseCancellation),
+            Core::AirPods::ListeningMode::NoiseCancellation, layout);
+    }
+
+    bool Apply(const Core::AirPods::ListeningModeState &state)
+    {
+        const bool ready = state.availability == Core::AirPods::ControlAvailability::Ready &&
+                           state.capabilities.Any();
+        setVisible(ready);
+        QString description;
+        if (state.pendingMode.has_value()) {
+            description = tr("Applying %1").arg(ListeningModeLabel(*state.pendingMode));
+        }
+        else if (state.confirmedMode.has_value()) {
+            description = tr("%1 selected").arg(ListeningModeLabel(*state.confirmedMode));
+        }
+        else if (state.error != Core::AirPods::ListeningModeError::None) {
+            description = ListeningModeErrorText(state.error);
+        }
+        if (description != accessibleDescription()) {
+            setAccessibleDescription(description);
+            QAccessibleEvent event{this, QAccessible::DescriptionChanged};
+            QAccessible::updateAccessibility(&event);
+        }
+        if (!ready) {
+            return false;
+        }
+
+        const auto selected = state.pendingMode.has_value() ? state.pendingMode : state.confirmedMode;
+        for (const auto &[mode, button] : _buttons) {
+            button->setVisible(state.capabilities.Supports(mode));
+            button->setChecked(selected.has_value() && *selected == mode);
+            button->setProperty("pending", state.pendingMode.has_value() && *selected == mode);
+            button->setAccessibleDescription(
+                state.pendingMode.has_value() && *selected == mode ? tr("Applying") : QString{});
+            button->style()->unpolish(button);
+            button->style()->polish(button);
+        }
+        return true;
+    }
+
+    void Retranslate()
+    {
+        setAccessibleName(tr("Listening mode"));
+        for (const auto &[mode, button] : _buttons) {
+            const auto text = ListeningModeLabel(mode);
+            button->setText(text);
+            button->setAccessibleName(text);
+        }
+    }
+
+private:
+    Core::AirPods::ListeningModeController &_controller;
+    std::vector<std::pair<Core::AirPods::ListeningMode, QToolButton *>> _buttons;
+
+    void AddButton(
+        const QString &text, Core::AirPods::ListeningMode mode, QHBoxLayout *layout)
+    {
+        auto *button = new QToolButton{this};
+        button->setText(text);
+        button->setCheckable(true);
+        button->setAutoExclusive(true);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        button->setProperty("cssClass", "listeningSegment");
+        button->setAccessibleName(text);
+        button->installEventFilter(this);
+        connect(button, &QToolButton::clicked, this, [this, mode] {
+            _controller.RequestMode(mode);
+        });
+        layout->addWidget(button);
+        _buttons.emplace_back(mode, button);
+    }
+
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() != QEvent::KeyPress) {
+            return QWidget::eventFilter(watched, event);
+        }
+
+        const auto *keyEvent = static_cast<QKeyEvent *>(event);
+        const int direction = keyEvent->key() == Qt::Key_Left ? -1
+                              : keyEvent->key() == Qt::Key_Right ? 1
+                                                                  : 0;
+        if (direction == 0) {
+            return QWidget::eventFilter(watched, event);
+        }
+
+        const auto current = std::find_if(
+            _buttons.cbegin(), _buttons.cend(),
+            [watched](const auto &entry) { return entry.second == watched; });
+        if (current == _buttons.cend()) {
+            return QWidget::eventFilter(watched, event);
+        }
+
+        auto index = static_cast<int>(std::distance(_buttons.cbegin(), current));
+        for (size_t attempts = 0; attempts < _buttons.size(); ++attempts) {
+            index = (index + direction + static_cast<int>(_buttons.size())) %
+                    static_cast<int>(_buttons.size());
+            auto *button = _buttons[static_cast<size_t>(index)].second;
+            if (button->isVisible() && button->isEnabled()) {
+                button->setFocus(Qt::OtherFocusReason);
+                button->click();
+                return true;
+            }
+        }
+        return true;
+    }
+};
+
 //////////////////////////////////////////////////
 
-MainWindow::MainWindow(QWidget *parent) : QDialog{parent}
+MainWindow::MainWindow(
+    Core::AirPods::ListeningModeController &listeningModeController, QWidget *parent)
+    : QDialog{parent}, _listeningModeController{listeningModeController}
 {
     qRegisterMetaType<Core::AirPods::State>("Core::AirPods::State");
     qRegisterMetaType<Core::Update::ReleaseInfo>("Core::Update::ReleaseInfo");
@@ -146,17 +286,21 @@ MainWindow::MainWindow(QWidget *parent) : QDialog{parent}
     _animationView = new Widget::AnimationView{this};
     _playback = new AnimationPlayback{*_animationView, this};
     _closeButton = new CloseButton{this};
+    _listeningModeSelector = new ListeningModeSelector{_listeningModeController, this};
 
     _ui.setupUi(this);
 
-    setFixedSize(_windowSize);
+    setMinimumWidth(_minimumWindowWidth);
+    setMaximumWidth(_maximumWindowWidth);
+    setMinimumHeight(300);
+    setMaximumHeight(_maximumWindowHeight);
     setWindowFlags(windowFlags() | Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
 
     // A translucent backing store retains fractional edge alpha. Native window regions and
     // QBitmap masks are binary and produce visibly stepped corners, especially above 100% DPI.
     setAttribute(Qt::WA_TranslucentBackground);
     setAutoFillBackground(false);
-    setProperty(Theme::Manager::kSkipDwmProperty, true);
+    setProperty(Theme::Manager::kBackdropRoleProperty, "transient");
 
     _ui.pushButton->setProperty("cssClass", "accent");
 
@@ -186,6 +330,9 @@ MainWindow::MainWindow(QWidget *parent) : QDialog{parent}
     connect(this, &MainWindow::HideSafely, this, &MainWindow::DoHide);
     connect(
         this, &MainWindow::VersionUpdateAvailableSafely, this, &MainWindow::VersionUpdateAvailable);
+    connect(
+        &_listeningModeController, &Core::AirPods::ListeningModeController::StateChanged, this,
+        &MainWindow::UpdateListeningModeState);
 
     _posAnimation.setDuration(500);
     _autoHideTimer->callOnTimeout([this] { DoHide(); });
@@ -195,6 +342,8 @@ MainWindow::MainWindow(QWidget *parent) : QDialog{parent}
     _ui.layoutPods->addWidget(_rightBattery);
     _ui.layoutCase->addWidget(_caseBattery);
     _ui.layoutClose->addWidget(_closeButton);
+    _ui.layoutListeningMode->addWidget(_listeningModeSelector);
+    _ui.listeningModeContainer->hide();
 
     // For getting the correct initial height of `_animationView` later
     _ui.layoutAnimation->activate();
@@ -221,6 +370,11 @@ void MainWindow::UpdateState(const Core::AirPods::State &state)
     LOG(Info, "MainWindow::UpdateState");
 
     _viewModel.UpdateState(state);
+    if (!_controlDeviceConnected || _controlModel != state.model) {
+        _controlDeviceConnected = true;
+        _controlModel = state.model;
+        _listeningModeController.SetDevice(state.model, true);
+    }
     Repaint();
 }
 
@@ -237,6 +391,8 @@ void MainWindow::Unavailable()
     LOG(Info, "MainWindow::Unavailable");
 
     _viewModel.Unavailable();
+    _controlDeviceConnected = false;
+    _listeningModeController.SetDevice(_controlModel, false);
     Repaint();
 }
 
@@ -245,6 +401,8 @@ void MainWindow::Disconnect()
     LOG(Info, "MainWindow::Disconnect");
 
     _viewModel.Disconnect();
+    _controlDeviceConnected = false;
+    _listeningModeController.SetDevice(_controlModel, false);
     Repaint();
 }
 
@@ -253,6 +411,8 @@ void MainWindow::Bind()
     LOG(Info, "MainWindow::Bind");
 
     _viewModel.Bind();
+    _controlDeviceConnected = false;
+    _listeningModeController.SetDevice(_controlModel, false);
     Repaint();
 }
 
@@ -261,6 +421,8 @@ void MainWindow::Unbind()
     LOG(Info, "MainWindow::Unbind");
 
     _viewModel.Unbind();
+    _controlDeviceConnected = false;
+    _listeningModeController.SetDevice(_controlModel, false);
     Repaint();
 }
 
@@ -354,7 +516,7 @@ void MainWindow::SetAnimation(std::optional<Core::AirPods::Model> model)
 
 void MainWindow::PlayAnimation()
 {
-    _playback->SetActive(true);
+    _playback->SetActive(Theme::Manager::Instance().AnimationsEnabled());
     _animationView->show();
 }
 
@@ -485,6 +647,7 @@ void MainWindow::Repaint()
     applyBattery(_leftBattery, presentation.leftBattery);
     applyBattery(_rightBattery, presentation.rightBattery);
     applyBattery(_caseBattery, presentation.caseBattery);
+    adjustSize();
 }
 
 void MainWindow::ApplyTheme()
@@ -506,7 +669,24 @@ void MainWindow::ApplyTheme()
     }
 
     _closeButton->update();
+    _posAnimation.setDuration(Theme::Manager::Instance().AnimationsEnabled() ? 500 : 0);
+    if (_isVisible) {
+        PlayAnimation();
+    }
     update();
+}
+
+void MainWindow::UpdateListeningModeState(const Core::AirPods::ListeningModeState &state)
+{
+    const bool ready = _listeningModeSelector->Apply(state);
+    _ui.listeningModeContainer->setVisible(ready);
+    adjustSize();
+}
+
+void MainWindow::RetranslateListeningMode()
+{
+    _listeningModeSelector->Retranslate();
+    UpdateListeningModeState(_listeningModeController.State());
 }
 
 void MainWindow::paintEvent(QPaintEvent *event)
@@ -515,9 +695,16 @@ void MainWindow::paintEvent(QPaintEvent *event)
 
     QPainter painter{this};
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(Theme::Manager::Instance().Colors().mainSurface);
-    painter.drawRoundedRect(QRectF{rect()}, _windowCornerRadius, _windowCornerRadius);
+    const auto &colors = Theme::Manager::Instance().Colors();
+    const auto surface = QRectF{rect()}.adjusted(1, 1, -1, -1);
+    painter.setPen(QPen{colors.glassBorder, 1.0});
+    painter.setBrush(colors.glassSurface);
+    painter.drawRoundedRect(surface, _windowCornerRadius, _windowCornerRadius);
+
+    painter.setPen(QPen{colors.glassHighlight, 1.0});
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRoundedRect(surface.adjusted(1, 1, -1, -1), _windowCornerRadius - 1,
+                            _windowCornerRadius - 1);
 }
 
 void MainWindow::FitDeviceLabelFont(const QString &text)

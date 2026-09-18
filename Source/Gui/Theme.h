@@ -58,6 +58,7 @@ struct Palette {
     QColor controlFill, controlHover, controlPressed, controlBorder;
     QColor accent, accentHover, accentPressed, accentDisabled, accentText;
     QColor popupSurface, popupBorder;
+    QColor glassSurface, glassBorder, glassHighlight, glassShadow;
 
     // Main window (iOS card)
     QColor mainSurface, mainText, mainTextSecondary;
@@ -81,12 +82,16 @@ public:
     // Windows that must not get DWM attributes (frameless popup, taskbar child) set this
     // dynamic property to `true`.
     constexpr static auto kSkipDwmProperty = "apdSkipDwm";
+    constexpr static auto kBackdropRoleProperty = "apdBackdropRole";
 
     static Manager &Instance();
 
     const Palette &Colors() const;
     bool IsDark() const;
     bool IsSystemDark() const;
+    bool IsTransparencyEnabled() const;
+    bool IsHighContrast() const;
+    bool AnimationsEnabled() const;
     QColor Accent() const;
     Mode CurrentMode() const;
     void SetMode(Mode mode);

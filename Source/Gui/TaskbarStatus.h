@@ -133,8 +133,9 @@ Q_SIGNALS:
     void ShowTrayMenuRequested(const QPoint &position);
 
 private:
-    constexpr static inline auto kFixedWidth{60};  // for horizontal taskbar
-    constexpr static inline auto kFixedHeight{40}; // for vertical taskbar
+    constexpr static inline auto kDetailedLongSide{104};
+    constexpr static inline auto kCompactLongSide{60};
+    constexpr static inline auto kTaskbarThickness{40};
 
     constexpr static inline auto kInitialUpdateInterval{100ms};
     constexpr static inline auto kIdleUpdateInterval{2s};
@@ -147,8 +148,11 @@ private:
     bool _isWin11OrGreater{false}, _isActuallyEnabled{false}, _isStateReady{false},
         _isFirstTimeout{false};
     int _cachedLength{0};
+    int _shellMissCount{0};
+    HWND _taskbarParent{nullptr};
     QTimer _updateTimer;
     std::optional<Core::AirPods::State> _airPodsState;
+    std::optional<bool> _lastHorizontal;
     Status _status{Status::Unavailable};
 #if defined APD_DEBUG
     bool _drawDebugBorder{false};
@@ -160,6 +164,9 @@ private:
     bool Disable();
     void UpdatePos(const TaskBarInfo &info, bool enable);
     void Repaint();
+    QSize StatusLogicalSize(bool horizontal) const;
+    bool UpdateModelIcon(Core::AirPods::Model model);
+    void ApplyOrientation(bool horizontal);
 
     void OnUpdateTimer();
     void OnSettingsChanged(TaskbarStatusBehavior value);

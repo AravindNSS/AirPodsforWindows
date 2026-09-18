@@ -32,6 +32,7 @@
 #include "MainWindowPresentation.h"
 #include "AnimationPlayback.h"
 #include "../Core/AirPods.h"
+#include "../Core/ListeningModeControl.h"
 #include "../Core/Update.h"
 #include "Base.h"
 #include "Widget/Battery.h"
@@ -41,13 +42,15 @@ namespace Gui {
 
 class CloseButton;
 class BatteryInfo;
+class ListeningModeSelector;
 
 class MainWindow : public QDialog
 {
     Q_OBJECT
 
 public:
-    MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(Core::AirPods::ListeningModeController &listeningModeController,
+                        QWidget *parent = nullptr);
     ~MainWindow();
 
     void StartUpdateChecks();
@@ -74,7 +77,9 @@ Q_SIGNALS:
     void SilentUpdateAvailable(const Core::Update::ReleaseInfo &releaseInfo);
 
 private:
-    constexpr static QSize _windowSize{320, 300};
+    constexpr static int _minimumWindowWidth{320};
+    constexpr static int _maximumWindowWidth{440};
+    constexpr static int _maximumWindowHeight{520};
     constexpr static QSize _screenMargin{24, 24};
     constexpr static qreal _windowCornerRadius = 32.0;
     constexpr static int _deviceLabelMaximumPointSize = 18;
@@ -87,6 +92,7 @@ private:
     AnimationPlayback *_playback;
     QTimer *_autoHideTimer = new QTimer{this};
     CloseButton *_closeButton;
+    ListeningModeSelector *_listeningModeSelector;
     Widget::Battery *_leftBattery = new Widget::Battery{this};
     Widget::Battery *_rightBattery = new Widget::Battery{this};
     Widget::Battery *_caseBattery = new Widget::Battery{this};
@@ -97,7 +103,10 @@ private:
     std::optional<Core::AirPods::Model> _cacheModel;
     ButtonAction _buttonAction{ButtonAction::NoButton};
     MainWindowViewModel _viewModel;
+    Core::AirPods::ListeningModeController &_listeningModeController;
     bool _isVisible{false};
+    bool _controlDeviceConnected{false};
+    Core::AirPods::Model _controlModel{Core::AirPods::Model::Unknown};
     std::atomic<bool> _deviceQueryRunning{false};
     std::jthread _deviceQueryThread;
 
@@ -112,6 +121,8 @@ private:
     void Repaint();
     void ApplyTheme();
     void FitDeviceLabelFont(const QString &text);
+    void UpdateListeningModeState(const Core::AirPods::ListeningModeState &state);
+    void RetranslateListeningMode();
 
     void OnAppStateChanged(Qt::ApplicationState state);
     void OnPosMoveFinished();
@@ -128,6 +139,7 @@ private:
     UTILS_QT_DISABLE_ESC_QUIT(QDialog);
     UTILS_QT_REGISTER_LANGUAGECHANGE(QDialog, [this] {
         _ui.retranslateUi(this);
+        RetranslateListeningMode();
         Repaint();
     });
 };

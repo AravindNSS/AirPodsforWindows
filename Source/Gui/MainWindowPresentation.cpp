@@ -11,6 +11,7 @@
 #include "MainWindowPresentation.h"
 
 #include <algorithm>
+#include <QCoreApplication>
 
 namespace Gui {
 namespace {
@@ -145,6 +146,65 @@ QString AnimationPresentation::FallbackResource() const
     result.replace("qrc:/Resource/Video/", ":/Resource/Image/Animation/");
     result.chop(4);
     return result + ".png";
+}
+
+QString GetModelImageResource(Core::AirPods::Model model)
+{
+    using Core::AirPods::Model;
+    switch (model) {
+    case Model::AirPods_1:
+    case Model::AirPods_2:
+    case Model::AirPods_3:
+    case Model::AirPods_4:
+    case Model::AirPods_4_ANC:
+    case Model::AirPods_Pro:
+    case Model::AirPods_Pro_2:
+    case Model::AirPods_Pro_2_USB_C:
+    case Model::AirPods_Pro_3:
+    case Model::AirPods_Max:
+    case Model::AirPods_Max_USB_C:
+    case Model::Beats_Fit_Pro:
+        return GetAnimationPresentation(model).FallbackResource();
+    default:
+        return {};
+    }
+}
+
+QString ListeningModeLabel(Core::AirPods::ListeningMode mode)
+{
+    using Core::AirPods::ListeningMode;
+    switch (mode) {
+    case ListeningMode::Transparency:
+        return QCoreApplication::translate("Gui::ListeningMode", "Transparency");
+    case ListeningMode::Adaptive:
+        return QCoreApplication::translate("Gui::ListeningMode", "Adaptive");
+    case ListeningMode::NoiseCancellation:
+        return QCoreApplication::translate("Gui::ListeningMode", "Noise Cancellation");
+    }
+    return {};
+}
+
+QString ListeningModeErrorText(Core::AirPods::ListeningModeError error)
+{
+    using Core::AirPods::ListeningModeError;
+    switch (error) {
+    case ListeningModeError::ConnectionFailed:
+        return QCoreApplication::translate(
+            "Gui::ListeningMode", "Could not connect to AirPods controls.");
+    case ListeningModeError::CommandRejected:
+        return QCoreApplication::translate(
+            "Gui::ListeningMode", "The AirPods rejected the listening mode change.");
+    case ListeningModeError::ConfirmationTimedOut:
+        return QCoreApplication::translate(
+            "Gui::ListeningMode", "The AirPods did not confirm the listening mode change.");
+    case ListeningModeError::ProtocolError:
+        return QCoreApplication::translate(
+            "Gui::ListeningMode", "AirPods controls returned an invalid response.");
+    case ListeningModeError::Disconnected:
+        return QCoreApplication::translate("Gui::ListeningMode", "AirPods controls disconnected.");
+    default:
+        return {};
+    }
 }
 
 QPoint PopupPosition(const QRect &availableGeometry, QSize windowSize, QSize margin)

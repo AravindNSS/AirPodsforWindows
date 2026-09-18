@@ -131,7 +131,7 @@ jobs:
             }
           }
           $forbiddenPackagePattern =
-            '(?i)((^|[\\/])[^\\/]*(test|mock|simulat(?:or|ion)|fixture|harness|validation)[^\\/]*($|[\\/])|(^|[\\/])[^\\/]+\.(pdb|ilk|lib|exp)$)'
+            '(?i)((^|[\\/])[^\\/]*(test|mock|simulat(?:or|ion)|fixture|harness|validation)[^\\/]*($|[\\/])|(^|[\\/])[^\\/]+\.(pdb|ilk|lib|exp|sys|cat|inf)$)'
           $forbiddenPackageEntries = Get-ChildItem -LiteralPath $portableSource -Recurse -Force |
             ForEach-Object {
               [IO.Path]::GetRelativePath($portableSource, $_.FullName)

@@ -24,10 +24,12 @@
 #include <QTimer>
 #include <QMenu>
 #include <QAction>
+#include <QActionGroup>
 
 #include "../Core/AirPods.h"
 #include "../Core/QuickConnect.h"
 #include "../Core/Update.h"
+#include "../Core/ListeningModeControl.h"
 #include "Base.h"
 #include "TrayActivation.h"
 #include "SettingsWindow.h"
@@ -40,7 +42,8 @@ class TrayIcon : public QWidget
 
 public:
     explicit TrayIcon(
-        std::function<int()> getCurrentLocaleIndex, Core::QuickConnect::Controller &quickConnect);
+        std::function<int()> getCurrentLocaleIndex, Core::QuickConnect::Controller &quickConnect,
+        Core::AirPods::ListeningModeController &listeningModeController);
 
     template <class... ArgsT>
     inline void ShowMessage(ArgsT &&...args)
@@ -74,6 +77,11 @@ private:
     QMenu *_menu = new QMenu{this};
     QAction *_actionNewVersion = new QAction{tr("New version available!"), this};
     QAction *_actionLowAudioLatency = new QAction{tr("Low audio latency (may cause hiss)"), this};
+    QMenu *_listeningModeMenu = new QMenu{tr("Listening mode"), _menu};
+    QActionGroup *_listeningModeGroup = new QActionGroup{this};
+    QAction *_actionTransparency = new QAction{tr("Transparency"), this};
+    QAction *_actionAdaptive = new QAction{tr("Adaptive"), this};
+    QAction *_actionNoiseCancellation = new QAction{tr("Noise Cancellation"), this};
     QAction *_actionSettings = new QAction{tr("Settings"), this};
     QAction *_actionAbout = new QAction{tr("About"), this};
     QAction *_actionQuit = new QAction{tr("Quit"), this};
@@ -85,8 +93,11 @@ private:
     std::optional<Core::Update::ReleaseInfo> _updateReleaseInfo;
     std::optional<IconRenderState> _lastIconRenderState;
     Core::QuickConnect::Controller &_quickConnect;
+    Core::AirPods::ListeningModeController &_listeningModeController;
     TrayActivationState _trayActivationState;
     QTimer _singleClickTimer{this};
+    Core::AirPods::ListeningModeError _lastListeningModeError{
+        Core::AirPods::ListeningModeError::None};
 
     void ShowMainWindow();
     void Repaint();
@@ -102,10 +113,15 @@ private:
     void OnQuickConnectOutcome(Core::QuickConnect::Outcome outcome, const QString &deviceName);
     void OnTrayIconBatteryChanged(Core::Settings::TrayIconBatteryBehavior value);
     void OnLowAudioLatencyChanged(bool enabled);
+    void OnListeningModeStateChanged(const Core::AirPods::ListeningModeState &state);
+    void RetranslateListeningModeActions();
 
 protected:
     SettingsWindow _settingsWindow;
 
-    UTILS_QT_REGISTER_LANGUAGECHANGE(QWidget, [this] { Repaint(); });
+    UTILS_QT_REGISTER_LANGUAGECHANGE(QWidget, [this] {
+        RetranslateListeningModeActions();
+        Repaint();
+    });
 };
 } // namespace Gui

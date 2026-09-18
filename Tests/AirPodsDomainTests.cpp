@@ -8,6 +8,8 @@
 
 #include <Config.h>
 #include "Source/Core/AirPods.h"
+#include "Source/Core/AapProtocol.h"
+#include "Source/Core/ListeningModeControl.h"
 #include "Source/Core/Settings.h"
 #include "Source/Core/SettingsRepository.h"
 #include "Source/Core/Update.h"
@@ -100,6 +102,49 @@ private:
     Core::Settings::MemoryRepository _values;
 };
 
+class TestControlTransport final : public Core::AirPods::IAirPodsControlTransport
+{
+public:
+    void Connect(Model model, uint64_t newSessionId) override
+    {
+        connectedModel = model;
+        sessionId = newSessionId;
+    }
+
+    void Disconnect(uint64_t) override {}
+
+    void SetListeningMode(Core::AirPods::ListeningMode mode, uint64_t commandSessionId) override
+    {
+        QCOMPARE(commandSessionId, sessionId);
+        sentModes.push_back(mode);
+    }
+
+    void ReportReady(const Core::AirPods::ListeningCapabilities &capabilities)
+    {
+        emit Ready(sessionId, capabilities);
+    }
+
+    void ReportReadyFor(
+        uint64_t targetSessionId, const Core::AirPods::ListeningCapabilities &capabilities)
+    {
+        emit Ready(targetSessionId, capabilities);
+    }
+
+    void Confirm(Core::AirPods::ListeningMode mode)
+    {
+        emit ModeConfirmed(sessionId, mode);
+    }
+
+    void FailFor(uint64_t targetSessionId, Core::AirPods::ListeningModeError error)
+    {
+        emit Failed(targetSessionId, error);
+    }
+
+    Model connectedModel{Model::Unknown};
+    uint64_t sessionId{0};
+    std::vector<Core::AirPods::ListeningMode> sentModes;
+};
+
 std::vector<uint8_t> MakePacket(
     uint16_t modelId, Side side, uint8_t leftBattery, uint8_t rightBattery, uint8_t caseBattery,
     bool bothInCase = true, bool lidOpened = true)
@@ -177,6 +222,15 @@ private Q_SLOTS:
     void PresentsMainWindowCaseBattery();
     void MapsMainWindowAnimationResources();
     void ConvertsTaskbarGeometryAcrossDpiBoundaries();
+    void ModelsListeningModeCapabilities();
+    void SerializesListeningModeRequests();
+    void CorrelatesListeningModeConfirmations();
+    void IgnoresStaleListeningModeSessions();
+    void RestoresConfirmedModeAfterTimeout();
+    void EncodesAndParsesAapNoiseControl();
+    void DecodesSplitAndCombinedAapNotifications();
+    void BoundsOversizedAapInput();
+    void PresentsListeningModeLabelsAndErrors();
 };
 
 void AirPodsDomainTests::RejectsMalformedPackets()
@@ -651,6 +705,10 @@ void AirPodsDomainTests::MapsMainWindowAnimationResources()
     const auto fallback = Gui::GetAnimationPresentation(Core::AirPods::Model::Unknown);
     QCOMPARE(fallback.resource, QString{"qrc:/Resource/Video/AirPods_1.avi"});
     QCOMPARE(fallback.sourceSize, QSize(800, 400));
+    QCOMPARE(
+        Gui::GetModelImageResource(Core::AirPods::Model::AirPods_Pro_3),
+        QString{":/Resource/Image/Animation/AirPods_Pro_3.png"});
+    QVERIFY(Gui::GetModelImageResource(Core::AirPods::Model::Unknown).isEmpty());
 
     // The qrc is linked into the application, not into this binary, so read it from the source
     // tree: a mapping naming a resource the qrc does not carry would ship a blank animation.
@@ -691,6 +749,196 @@ void AirPodsDomainTests::ConvertsTaskbarGeometryAcrossDpiBoundaries()
         Gui::TaskbarGeometry::CalculateLayout(QSize{50, 1440}, QRect{0, 120, 50, 1270}, 120, false);
     QCOMPARE(vertical.statusLogical, QRect(0, 1112, 40, 40));
     QCOMPARE(vertical.taskButtonsNative, QRect(0, 120, 50, 1270));
+
+    const auto detailed = Gui::TaskbarGeometry::CalculateLayout(
+        QSize{2560, 50}, QRect{160, 0, 2325, 50}, 120, true, QSize{104, 40});
+    QCOMPARE(detailed.statusLogical, QRect(1944, 0, 104, 40));
+    QCOMPARE(detailed.taskButtonsNative, QRect(160, 0, 2270, 50));
+
+    const auto detailedVertical = Gui::TaskbarGeometry::CalculateLayout(
+        QSize{50, 1440}, QRect{0, 120, 50, 1270}, 120, false, QSize{40, 104});
+    QCOMPARE(detailedVertical.statusLogical, QRect(0, 1048, 40, 104));
+    QCOMPARE(detailedVertical.taskButtonsNative, QRect(0, 120, 50, 1190));
+}
+
+void AirPodsDomainTests::ModelsListeningModeCapabilities()
+{
+    using namespace Core::AirPods;
+
+    ListeningCapabilities capabilities{
+        .transparency = true,
+        .adaptive = false,
+        .noiseCancellation = true,
+        .transportVersion = 1,
+    };
+
+    QVERIFY(capabilities.Any());
+    QVERIFY(capabilities.Supports(ListeningMode::Transparency));
+    QVERIFY(!capabilities.Supports(ListeningMode::Adaptive));
+    QVERIFY(capabilities.Supports(ListeningMode::NoiseCancellation));
+}
+
+void AirPodsDomainTests::SerializesListeningModeRequests()
+{
+    using namespace Core::AirPods;
+
+    auto transport = std::make_unique<TestControlTransport>();
+    auto *transportObserver = transport.get();
+    ListeningModeController controller{std::move(transport)};
+
+    controller.SetDevice(Model::AirPods_Pro_3, true);
+    QCOMPARE(controller.State().availability, ControlAvailability::Connecting);
+    QCOMPARE(transportObserver->connectedModel, Model::AirPods_Pro_3);
+
+    transportObserver->ReportReady({true, true, true, 1});
+    QCOMPARE(controller.State().availability, ControlAvailability::Ready);
+
+    controller.RequestMode(ListeningMode::Transparency);
+    QCOMPARE(transportObserver->sentModes.size(), size_t{1});
+    QCOMPARE(controller.State().pendingMode, std::optional{ListeningMode::Transparency});
+
+    // A rapid second choice is retained but is not sent until the first command is confirmed.
+    controller.RequestMode(ListeningMode::NoiseCancellation);
+    QCOMPARE(transportObserver->sentModes.size(), size_t{1});
+    QCOMPARE(controller.State().pendingMode, std::optional{ListeningMode::NoiseCancellation});
+
+    transportObserver->Confirm(ListeningMode::Transparency);
+    QCOMPARE(transportObserver->sentModes.size(), size_t{2});
+    QCOMPARE(transportObserver->sentModes.back(), ListeningMode::NoiseCancellation);
+
+    transportObserver->Confirm(ListeningMode::NoiseCancellation);
+    QCOMPARE(controller.State().confirmedMode, std::optional{ListeningMode::NoiseCancellation});
+    QVERIFY(!controller.State().pendingMode.has_value());
+}
+
+void AirPodsDomainTests::CorrelatesListeningModeConfirmations()
+{
+    using namespace Core::AirPods;
+
+    auto transport = std::make_unique<TestControlTransport>();
+    auto *transportObserver = transport.get();
+    ListeningModeController controller{std::move(transport)};
+    controller.SetDevice(Model::AirPods_Pro_3, true);
+    transportObserver->ReportReady({true, true, true, 1});
+
+    controller.RequestMode(ListeningMode::Transparency);
+    controller.RequestMode(ListeningMode::NoiseCancellation);
+
+    // A stem-originated notification updates the confirmed device state but does not complete the
+    // transparency command that is still in flight.
+    transportObserver->Confirm(ListeningMode::Adaptive);
+    QCOMPARE(controller.State().confirmedMode, std::optional{ListeningMode::Adaptive});
+    QCOMPARE(controller.State().pendingMode, std::optional{ListeningMode::NoiseCancellation});
+    QCOMPARE(transportObserver->sentModes.size(), size_t{1});
+
+    transportObserver->Confirm(ListeningMode::Transparency);
+    QCOMPARE(transportObserver->sentModes.size(), size_t{2});
+    QCOMPARE(transportObserver->sentModes.back(), ListeningMode::NoiseCancellation);
+    QCOMPARE(controller.State().pendingMode, std::optional{ListeningMode::NoiseCancellation});
+}
+
+void AirPodsDomainTests::IgnoresStaleListeningModeSessions()
+{
+    using namespace Core::AirPods;
+
+    auto transport = std::make_unique<TestControlTransport>();
+    auto *transportObserver = transport.get();
+    ListeningModeController controller{std::move(transport)};
+
+    controller.SetDevice(Model::AirPods_Pro_3, true);
+    const auto staleSession = transportObserver->sessionId;
+    controller.SetDevice(Model::AirPods_Pro_3, false);
+    transportObserver->ReportReadyFor(staleSession, {true, true, true, 1});
+    QCOMPARE(controller.State().availability, ControlAvailability::Unavailable);
+
+    controller.SetDevice(Model::AirPods_Pro_3, true);
+    const auto currentSession = transportObserver->sessionId;
+    QVERIFY(currentSession != staleSession);
+    transportObserver->FailFor(staleSession, ListeningModeError::ConnectionFailed);
+    QCOMPARE(controller.State().availability, ControlAvailability::Connecting);
+    transportObserver->ReportReady({true, true, true, 1});
+    QCOMPARE(controller.State().availability, ControlAvailability::Ready);
+}
+
+void AirPodsDomainTests::RestoresConfirmedModeAfterTimeout()
+{
+    using namespace Core::AirPods;
+
+    auto transport = std::make_unique<TestControlTransport>();
+    auto *transportObserver = transport.get();
+    ListeningModeController controller{std::move(transport), nullptr, 10};
+    controller.SetDevice(Model::AirPods_Pro_3, true);
+    transportObserver->ReportReady({true, true, true, 1});
+    transportObserver->Confirm(ListeningMode::Adaptive);
+
+    controller.RequestMode(ListeningMode::Transparency);
+    QTRY_COMPARE(controller.State().error, ListeningModeError::ConfirmationTimedOut);
+    QCOMPARE(controller.State().confirmedMode, std::optional{ListeningMode::Adaptive});
+    QVERIFY(!controller.State().pendingMode.has_value());
+    QCOMPARE(controller.State().availability, ControlAvailability::Ready);
+}
+
+void AirPodsDomainTests::EncodesAndParsesAapNoiseControl()
+{
+    using namespace Core::AirPods;
+
+    const auto transparency = Aap::MakeNoiseControlCommand(ListeningMode::Transparency);
+    QCOMPARE(transparency[7], uint8_t{0x03});
+    QCOMPARE(Aap::ParseNoiseControlPacket(transparency), std::optional{ListeningMode::Transparency});
+
+    auto unknown = transparency;
+    unknown[7] = 0x7f;
+    QVERIFY(!Aap::ParseNoiseControlPacket(unknown).has_value());
+
+    const std::array<uint8_t, 2> truncated{0x04, 0x00};
+    QVERIFY(!Aap::ParseNoiseControlPacket(truncated).has_value());
+}
+
+void AirPodsDomainTests::DecodesSplitAndCombinedAapNotifications()
+{
+    using namespace Core::AirPods;
+
+    const auto adaptive = Aap::MakeNoiseControlCommand(ListeningMode::Adaptive);
+    const auto cancellation = Aap::MakeNoiseControlCommand(ListeningMode::NoiseCancellation);
+    Aap::NoiseControlStreamDecoder decoder;
+
+    QCOMPARE(decoder.Push(std::span{adaptive}.first(5)).size(), size_t{0});
+    const auto first = decoder.Push(std::span{adaptive}.subspan(5));
+    QVERIFY(first == std::vector{ListeningMode::Adaptive});
+
+    std::vector<uint8_t> combined{0xaa, 0xbb};
+    combined.insert(combined.end(), cancellation.begin(), cancellation.end());
+    combined.insert(combined.end(), adaptive.begin(), adaptive.end());
+    const auto decoded = decoder.Push(combined);
+    QVERIFY(decoded ==
+            (std::vector{ListeningMode::NoiseCancellation, ListeningMode::Adaptive}));
+}
+
+void AirPodsDomainTests::BoundsOversizedAapInput()
+{
+    using namespace Core::AirPods;
+
+    Aap::NoiseControlStreamDecoder decoder;
+    std::vector<uint8_t> oversized(Aap::kMaximumPacketSize * 8, 0xaa);
+    const auto packet = Aap::MakeNoiseControlCommand(ListeningMode::Adaptive);
+    oversized.insert(oversized.end(), packet.begin(), packet.end());
+
+    const auto decoded = decoder.Push(oversized);
+    QVERIFY(decoded == std::vector{ListeningMode::Adaptive});
+    QVERIFY(decoder.BufferedSize() <= Aap::kMaximumPacketSize);
+}
+
+void AirPodsDomainTests::PresentsListeningModeLabelsAndErrors()
+{
+    using namespace Core::AirPods;
+
+    QCOMPARE(Gui::ListeningModeLabel(ListeningMode::Transparency), QString{"Transparency"});
+    QCOMPARE(Gui::ListeningModeLabel(ListeningMode::Adaptive), QString{"Adaptive"});
+    QCOMPARE(
+        Gui::ListeningModeLabel(ListeningMode::NoiseCancellation),
+        QString{"Noise Cancellation"});
+    QVERIFY(!Gui::ListeningModeErrorText(ListeningModeError::ConfirmationTimedOut).isEmpty());
+    QVERIFY(Gui::ListeningModeErrorText(ListeningModeError::None).isEmpty());
 }
 
 QTEST_GUILESS_MAIN(AirPodsDomainTests)

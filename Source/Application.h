@@ -29,6 +29,7 @@
 
 namespace Core::AirPods {
 class Manager;
+class ListeningModeController;
 }
 
 namespace Core::LowAudioLatency {
@@ -86,6 +87,7 @@ private:
     // in reverse declaration order.
     std::shared_ptr<Core::QuickConnect::Backend> _quickConnectBackend;
     std::unique_ptr<Core::QuickConnect::Controller> _quickConnect;
+    std::unique_ptr<Core::AirPods::ListeningModeController> _listeningModeController;
     std::unique_ptr<Gui::TrayIcon> _trayIcon;
     std::unique_ptr<Gui::TaskbarStatus> _taskbarStatus;
     std::unique_ptr<Gui::MainWindow> _mainWindow;
