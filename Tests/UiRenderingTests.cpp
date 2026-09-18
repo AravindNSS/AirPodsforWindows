@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <algorithm>
 #include <atomic>
 
 #include <QCheckBox>
@@ -61,7 +62,10 @@ void VerifySmoothPopupCorners(QWidget *popup, const QString &fileName)
     const auto image = popup->grab().toImage();
     QVERIFY(image.save(outputDir + fileName));
     QVERIFY(image.hasAlphaChannel());
-    const int cornerSize = qRound(10 * image.devicePixelRatio());
+    // The main glass card uses a 32 logical-pixel radius. Probe far enough into the corner to
+    // cover that curve while remaining well inside every popup validated by this helper.
+    const int logicalProbeSize = (std::min)(40, (std::min)(popup->width(), popup->height()) / 3);
+    const int cornerSize = qRound(logicalProbeSize * image.devicePixelRatio());
     // Every corner must have a transparent exterior and intermediate alpha along the curve.
     // An opaque native background or a binary region mask fails these pixel checks.
     for (const bool right : {false, true}) {
@@ -73,12 +77,13 @@ void VerifySmoothPopupCorners(QWidget *popup, const QString &fileName)
             QCOMPARE(qAlpha(pixelAt(0, 0)), 0);
             // Glass surfaces deliberately retain alpha; the content area must still be
             // substantially opaque enough for text contrast.
-            QVERIFY(qAlpha(pixelAt(cornerSize, cornerSize)) >= 200);
+            const int interiorAlpha = qAlpha(pixelAt(cornerSize, cornerSize));
+            QVERIFY(interiorAlpha >= 200);
             int blendedPixels = 0;
             for (int y = 0; y < cornerSize; ++y) {
                 for (int x = 0; x < cornerSize; ++x) {
                     const int alpha = qAlpha(pixelAt(x, y));
-                    blendedPixels += alpha > 0 && alpha < 255;
+                    blendedPixels += alpha > 0 && alpha < interiorAlpha;
                 }
             }
             QVERIFY(blendedPixels > 0);
@@ -479,9 +484,9 @@ private Q_SLOTS:
             prompt.findChild<QPlainTextEdit *>("releaseNotes")->toPlainText(),
             UpdateFixture().changeLog);
         theme.SetMode(Gui::Theme::Mode::Dark);
-        QCOMPARE(failure.palette().color(QPalette::Window), theme.Colors().windowBackground);
+        QCOMPARE(failure.palette().color(QPalette::Window), theme.Colors().glassSurface);
         theme.SetMode(Gui::Theme::Mode::Light);
-        QCOMPARE(failure.palette().color(QPalette::Window), theme.Colors().windowBackground);
+        QCOMPARE(failure.palette().color(QPalette::Window), theme.Colors().glassSurface);
         QCoreApplication::removeTranslator(&translator);
         QCoreApplication::processEvents();
         QCOMPARE(failure.findChild<QLabel *>("title")->text(), englishTitle);
